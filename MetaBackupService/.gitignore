@@ -6,3 +6,4 @@ obj/
 *.log
 *.pubxml.user
 *.csproj.user
+*.md
