@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
+using System.Linq;
 using System.Threading;
 
 namespace MetaBackupService
@@ -42,6 +44,17 @@ namespace MetaBackupService
 
             _shouldStop = false;
             _isRunning = true;
+
+            // IMPORTANT: Load persisted queue from disk on startup
+            // This recovers tasks that were interrupted before the crash
+            try
+            {
+                LoadPersistedQueue();
+            }
+            catch (Exception ex)
+            {
+                LogManager.WriteLog("Error loading persisted queue on startup: " + ex.Message);
+            }
 
             _queueWorkerThread = new Thread(ProcessQueue)
             {
@@ -99,6 +112,8 @@ namespace MetaBackupService
 
         private void ProcessQueue()
         {
+            int checkCleanupCounter = 0;
+            
             while (!_shouldStop)
             {
                 try
@@ -107,8 +122,6 @@ namespace MetaBackupService
 
                     if (nextTask != null)
                     {
-                        LogManager.WriteLog("Processing queued task: " + nextTask.Name);
-
                         TaskQueue.UpdateTaskStatus(nextTask.Id, "running");
                         nextTask.Start();
 
@@ -119,8 +132,7 @@ namespace MetaBackupService
                             nextTask.Complete();
                             TaskQueue.UpdateTaskStatus(nextTask.Id, "completed");
 
-                            LogManager.WriteLog("Task completed: " + nextTask.Name);
-                            
+                            TaskResumeManager.DeleteResumeState(nextTask.Id);
                             TaskQueue.RemoveTask(nextTask.Id);
                         }
                         catch (Exception ex)
@@ -128,20 +140,40 @@ namespace MetaBackupService
                             nextTask.Fail(ex.Message);
                             TaskQueue.UpdateTaskStatus(nextTask.Id, "failed");
 
-                            LogManager.WriteLog("Task failed: " + nextTask.Name + " - Error: " + ex.Message);
-                            
-                            TaskQueue.RemoveTask(nextTask.Id);
+                            // Check if we can retry
+                            if (nextTask.CanRetry())
+                            {
+                                nextTask.PrepareForRetry();
+                                TaskQueue.UpdateTaskStatus(nextTask.Id, "pending");
+                                LogManager.WriteLog("Task will retry - Attempt " + (nextTask.RetryCount) + " of " + nextTask.MaxRetries + ": " + nextTask.Name);
+                            }
+                            else
+                            {
+                                TaskResumeManager.DeleteResumeState(nextTask.Id);
+                                TaskQueue.RemoveTask(nextTask.Id);
+                                LogManager.WriteLog("Task failed (no more retries): " + nextTask.Name + " - Error: " + ex.Message);
+                            }
+                        }
+                        
+                        // Every 10 tasks, cleanup old completed/failed tasks
+                        checkCleanupCounter++;
+                        if (checkCleanupCounter >= 10)
+                        {
+                            TaskQueue.CleanupOldCompletedTasks(24);  // Remove tasks older than 24 hours
+                            checkCleanupCounter = 0;
                         }
                     }
                     else
                     {
-                        Thread.Sleep(5000);
+                        // No pending tasks - cleanup old tasks
+                        TaskQueue.CleanupOldCompletedTasks(24);
+                        Thread.Sleep(1000);  // Check more frequently when idle
                     }
                 }
                 catch (Exception ex)
                 {
-                    LogManager.WriteLog("Error in queue processing loop: " + ex.Message);
-                    Thread.Sleep(5000);
+                    LogManager.WriteLog("Error in queue processing: " + ex.Message);
+                    Thread.Sleep(1000);
                 }
             }
         }
@@ -164,53 +196,86 @@ namespace MetaBackupService
 
         private void ExecuteQueuedBackup(TaskQueueItem queueItem)
         {
-            try
+            string unifiedProgressFile = Path.Combine(
+                LogManager.GetLogDirectory(),
+                "progress.txt");
+            
+            DateTime startTime = DateTime.Now;
+            int progressUpdateCounter = 0;
+            const int PROGRESS_UPDATE_FREQUENCY = 50;  // Update progress every 50 files instead of every file
+            
+            BackupEngine engine = new BackupEngine();
+
+            // Create unified progress callback - OPTIMIZED: Don't write to disk on every file
+            BackupEngine.ProgressCallback progressCallback = (current, total) =>
             {
-                string progressLogFile = LogManager.CreateTaskLogFile("backup", queueItem.Name);
-                queueItem.LogFilePath = progressLogFile;
-
-                try { System.IO.File.Delete(progressLogFile.Replace(".txt", "_progress.txt")); } catch { }
-
-                BackupEngine engine = new BackupEngine();
-
-                int lastLogged = 0;
-                BackupEngine.ProgressCallback progressCallback = (current, total) =>
+                queueItem.FilesProcessed = current;
+                queueItem.TotalFiles = total;
+                
+                // Only write progress to file every N files to reduce disk I/O
+                progressUpdateCounter++;
+                if (progressUpdateCounter >= PROGRESS_UPDATE_FREQUENCY || current == total)
                 {
-                    queueItem.FilesProcessed = current;
-                    queueItem.TotalFiles = total;
-                    
-                    if (total > 0 && (current - lastLogged >= 5 || current == total))
+                    if (total > 0)
                     {
-                        string progressFile = progressLogFile.Replace(".txt", "_progress.txt");
                         int progressPercent = (current * 100) / total;
-                        string progressLine = string.Format("Progress: {0}/{1} ({2}%)", current, total, progressPercent);
+                        string progressLine = string.Format("[{0:yyyy-MM-dd HH:mm:ss}] {1}: {2}/{3} ({4}%)",
+                            DateTime.Now, queueItem.Name, current, total, progressPercent);
                         
                         try
                         {
-                            System.IO.File.AppendAllText(progressFile, progressLine + Environment.NewLine);
+                            System.IO.File.AppendAllText(unifiedProgressFile, progressLine + Environment.NewLine);
                         }
                         catch { }
-
-                        lastLogged = current;
                     }
-                };
+                    progressUpdateCounter = 0;
+                }
+            };
 
-                string result = engine.RunBackup(queueItem.Source, queueItem.Dest, queueItem.Username, 
-                    queueItem.FullBackup, queueItem.KeepLast, progressCallback);
+            // Load resume state if available
+            var resumeState = TaskResumeManager.LoadResumeState(queueItem.Id);
 
+            string result = null;
+            try
+            {
+                result = engine.RunBackup(queueItem.Source, queueItem.Dest, queueItem.Username, 
+                    queueItem.FullBackup, queueItem.KeepLast, progressCallback, resumeState, queueItem.Id);
+            }
+            catch (Exception backupEx)
+            {
+                LogManager.WriteLog("Backup execution failed: " + backupEx.Message);
+                throw;
+            }
+
+            // Log completion to yedek tasks log
+            string yedekTasksLog = Path.Combine(
+                LogManager.GetTaskLogDirectory("backup"),
+                "tasks.txt");
+            
+            TimeSpan duration = DateTime.Now - startTime;
+            
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(yedekTasksLog));
+                
                 if (string.IsNullOrEmpty(result))
                 {
-                    LogManager.WriteLog("Backup completed with no changes");
+                    string taskEntry = string.Format("[{0:yyyy-MM-dd HH:mm:ss}] {1} - NO CHANGES - Duration: {2:hh\\:mm\\:ss}",
+                        DateTime.Now, queueItem.Name, duration);
+                    System.IO.File.AppendAllText(yedekTasksLog, taskEntry + Environment.NewLine);
+                    LogManager.WriteLog("Backup completed with no changes: " + queueItem.Name);
                 }
                 else
                 {
-                    LogManager.WriteLog("Backup completed: " + result);
+                    string taskEntry = string.Format("[{0:yyyy-MM-dd HH:mm:ss}] {1} - SUCCESS - {2} files - {3} - Duration: {4:hh\\:mm\\:ss}",
+                        DateTime.Now, queueItem.Name, queueItem.FilesProcessed, result, duration);
+                    System.IO.File.AppendAllText(yedekTasksLog, taskEntry + Environment.NewLine);
+                    LogManager.WriteLog("Backup completed successfully: " + queueItem.Name + " - " + queueItem.FilesProcessed + " files");
                 }
             }
-            catch (Exception ex)
+            catch (Exception logEx)
             {
-                LogManager.WriteLog("Backup error: " + ex.Message);
-                throw;
+                LogManager.WriteLog("Error logging backup completion: " + logEx.Message);
             }
         }
 
@@ -218,9 +283,6 @@ namespace MetaBackupService
         {
             try
             {
-                string progressLogFile = LogManager.CreateTaskLogFile("cleaning", queueItem.Name);
-                queueItem.LogFilePath = progressLogFile;
-
                 CleaningEngine.ProgressCallback progressCallback = (current, total) =>
                 {
                     queueItem.FilesProcessed = current;
@@ -247,6 +309,53 @@ namespace MetaBackupService
         public List<TaskQueueItem> GetQueuedTasks()
         {
             return TaskQueue.LoadQueue();
+        }
+
+        /// <summary>
+        /// Load tasks from disk that were persisted before crash/shutdown
+        /// This ensures resumed tasks aren't lost on service restart
+        /// </summary>
+        private void LoadPersistedQueue()
+        {
+            try
+            {
+                var queue = TaskQueue.LoadQueue();
+                
+                if (queue == null || queue.Count == 0)
+                {
+                    LogManager.WriteLog("No persisted queue found on startup");
+                    return;
+                }
+
+                // Count tasks by status
+                int pendingCount = queue.Count(t => t.Status == "pending");
+                int runningCount = queue.Count(t => t.Status == "running");
+                int failedCount = queue.Count(t => t.Status == "failed");
+
+                if (pendingCount > 0 || runningCount > 0 || failedCount > 0)
+                {
+                    LogManager.WriteLog("Loaded persisted queue on startup:");
+                    LogManager.WriteLog("  - Pending tasks: " + pendingCount);
+                    LogManager.WriteLog("  - Running tasks: " + runningCount + " (will be retried)");
+                    LogManager.WriteLog("  - Failed tasks: " + failedCount);
+
+                    // Convert any "running" tasks back to "pending" so they can be retried
+                    // This handles cases where service crashed mid-backup
+                    foreach (var task in queue.Where(t => t.Status == "running"))
+                    {
+                        LogManager.WriteLog("Recovering crashed task: " + task.Name + " (ID: " + task.Id + ")");
+                        task.Status = "pending";
+                        task.StartedAt = null;
+                    }
+
+                    // Save the updated queue back to disk
+                    TaskQueue.SaveQueue(queue);
+                }
+            }
+            catch (Exception ex)
+            {
+                LogManager.WriteLog("Error in LoadPersistedQueue: " + ex.Message);
+            }
         }
     }
 }

@@ -24,6 +24,12 @@ namespace MetaBackupService
         public string ErrorMessage { get; set; }
         public string LogFilePath { get; set; }
 
+        // Resume system properties
+        public int RetryCount { get; set; }
+        public int MaxRetries { get; set; }
+        public DateTime? LastRetryAt { get; set; }
+        public string ResumeStatePath { get; set; }
+
         public TaskQueueItem()
         {
             Id = Guid.NewGuid().ToString();
@@ -31,6 +37,9 @@ namespace MetaBackupService
             CreatedAt = DateTime.Now;
             FilesProcessed = 0;
             TotalFiles = 0;
+            RetryCount = 0;
+            MaxRetries = 3;
+            LastRetryAt = null;
         }
 
         public void Start()
@@ -59,6 +68,21 @@ namespace MetaBackupService
             CompletedAt = null;
             ErrorMessage = null;
             FilesProcessed = 0;
+        }
+
+        public bool CanRetry()
+        {
+            return RetryCount < MaxRetries && Status == "failed";
+        }
+
+        public void PrepareForRetry()
+        {
+            RetryCount++;
+            LastRetryAt = DateTime.Now;
+            Status = "pending";
+            StartedAt = null;
+            CompletedAt = null;
+            ErrorMessage = null;
         }
     }
 }

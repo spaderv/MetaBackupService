@@ -75,7 +75,7 @@ namespace MetaBackupService
                 _configReloadTimer = new Timer(CheckConfigReload, null, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30));
 
                 WriteLog("Starting task request monitor...");
-                _taskRequestTimer = new Timer(CheckTaskRequests, null, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
+                _taskRequestTimer = new Timer(CheckTaskRequests, null, TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(10));
 
                 WriteLog("MetaBackup Service started successfully. Tasks scheduled: " + _scheduledTasks.Count);
                 LogManager.WriteSeparator();
@@ -83,7 +83,6 @@ namespace MetaBackupService
             catch (Exception ex)
             {
                 WriteLog("ERROR starting service: " + ex.Message);
-                WriteLog("StackTrace: " + ex.StackTrace);
                 throw;
             }
         }
@@ -97,27 +96,19 @@ namespace MetaBackupService
             {
                 string requestDir = Path.Combine(GetConfigDir(), "task-requests");
                 
-                WriteLog("DEBUG: Checking for task requests in: " + requestDir);
-                WriteLog("DEBUG: Directory exists: " + Directory.Exists(requestDir));
-                
                 if (!Directory.Exists(requestDir))
                 {
-                    WriteLog("DEBUG: Request directory doesn't exist, creating it");
                     Directory.CreateDirectory(requestDir);
                     return;
                 }
 
                 string[] requestFiles = Directory.GetFiles(requestDir, "*.json");
-                WriteLog("DEBUG: Found " + requestFiles.Length + " request files");
                 
                 foreach (string requestFile in requestFiles)
                 {
-                    WriteLog("DEBUG: Processing request file: " + requestFile);
                     try
                     {
                         string json = File.ReadAllText(requestFile);
-                        WriteLog("DEBUG: Request JSON: " + json);
-                        
                         var request = SimpleJsonParser.Parse(json);
 
                         string taskId = null;
@@ -128,16 +119,6 @@ namespace MetaBackupService
                         if (request.ContainsKey("task_name"))
                             taskName = request["task_name"].ToString();
 
-                        WriteLog("DEBUG: Looking for task ID: " + (taskId ?? "null") + ", Name: " + (taskName ?? "null"));
-                        WriteLog("DEBUG: Total scheduled tasks: " + _scheduledTasks.Count);
-                        
-                        foreach (var st in _scheduledTasks)
-                        {
-                            string stName = st.TaskDict.ContainsKey("name") ? st.TaskDict["name"].ToString() : "NoName";
-                            string stId = st.TaskDict.ContainsKey("id") ? st.TaskDict["id"].ToString() : "NoID";
-                            WriteLog("DEBUG: Available task - ID: " + stId + ", Name: " + stName);
-                        }
-
                         ScheduledTask taskToRun = null;
                         
                         // Try to find by ID first
@@ -145,7 +126,6 @@ namespace MetaBackupService
                         {
                             taskToRun = _scheduledTasks.FirstOrDefault(t => 
                                 t.TaskDict.ContainsKey("id") && t.TaskDict["id"].ToString() == taskId);
-                            WriteLog("DEBUG: Search by ID result: " + (taskToRun != null ? "FOUND" : "NOT FOUND"));
                         }
                         
                         // Fallback: try to find by name
@@ -153,20 +133,15 @@ namespace MetaBackupService
                         {
                             taskToRun = _scheduledTasks.FirstOrDefault(t => 
                                 t.TaskDict.ContainsKey("name") && t.TaskDict["name"].ToString() == taskName);
-                            WriteLog("DEBUG: Search by name result: " + (taskToRun != null ? "FOUND" : "NOT FOUND"));
                         }
 
                         if (taskToRun != null)
                         {
                             string displayName = taskToRun.TaskDict.ContainsKey("name") ? 
                                 taskToRun.TaskDict["name"].ToString() : (taskId ?? "Unknown");
-                            WriteLog("?? Enqueueing manually requested task: " + displayName);
+                            LogManager.WriteLog("Task enqueued: " + displayName);
                             
                             _queueManager.EnqueueTask(taskToRun);
-                        }
-                        else
-                        {
-                            WriteLog("?? Task request received but task not found. ID: " + (taskId ?? "null") + ", Name: " + (taskName ?? "null"));
                         }
 
                         // Delete request file after processing
@@ -174,15 +149,13 @@ namespace MetaBackupService
                     }
                     catch (Exception ex)
                     {
-                        WriteLog("Error processing task request: " + ex.Message);
-                        WriteLog("StackTrace: " + ex.StackTrace);
+                        LogManager.WriteLog("Error processing task request: " + ex.Message);
                     }
                 }
             }
             catch (Exception ex)
             {
-                WriteLog("Error in CheckTaskRequests: " + ex.Message);
-                WriteLog("StackTrace: " + ex.StackTrace);
+                LogManager.WriteLog("Error in CheckTaskRequests: " + ex.Message);
             }
         }
 
@@ -359,19 +332,6 @@ namespace MetaBackupService
             {
                 DateTime now = DateTime.Now;
                 
-                if (now.Second == 0)
-                {
-                    LogManager.WriteLog(string.Format("? Scheduler check - Time: {0:HH:mm} | Tasks: {1}", now, _scheduledTasks.Count));
-                    
-                    foreach (ScheduledTask task in _scheduledTasks)
-                    {
-                        string taskName = task.TaskDict.ContainsKey("name") ? task.TaskDict["name"].ToString() : "Unknown";
-                        string times = string.Join(", ", task.Times.Select(t => string.Format("{0:D2}:{1:D2}", t.Item1, t.Item2)));
-                        string days = task.DaysOfWeek.Count > 0 ? string.Join(", ", task.DaysOfWeek) : "Every day";
-                        LogManager.WriteLog(string.Format("  ? {0} | Times: {1} | Days: {2}", taskName, times, days));
-                    }
-                }
-
                 foreach (ScheduledTask task in _scheduledTasks)
                 {
                     if (ShouldTaskRun(task, now))
@@ -381,10 +341,7 @@ namespace MetaBackupService
                         {
                             task.LastRun = now;
                             string taskName = task.TaskDict.ContainsKey("name") ? task.TaskDict["name"].ToString() : "Unknown";
-                            LogManager.WriteSeparator();
-                            LogManager.WriteLog("?? TASK TRIGGERED: " + taskName);
-                            LogManager.WriteLog("Scheduled time: " + string.Format("{0:HH:mm}", now));
-                            LogManager.WriteSeparator();
+                            LogManager.WriteLog("Task triggered: " + taskName);
 
                             _queueManager.EnqueueTask(task);
                         }
@@ -393,8 +350,7 @@ namespace MetaBackupService
             }
             catch (Exception ex)
             {
-                LogManager.WriteLog("ERROR in scheduler: " + ex.Message);
-                LogManager.WriteLog("StackTrace: " + ex.StackTrace);
+                LogManager.WriteLog("Error in scheduler: " + ex.Message);
             }
         }
 

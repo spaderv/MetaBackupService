@@ -167,6 +167,48 @@ namespace MetaBackupService
             }
         }
 
+        public static void CleanupOldCompletedTasks(int maxAgeHours = 24)
+        {
+            lock (_lockObject)
+            {
+                try
+                {
+                    var queue = LoadQueue();
+                    var now = DateTime.Now;
+                    int removed = 0;
+
+                    // Remove tasks that completed or failed more than maxAgeHours ago
+                    var tasksToRemove = queue.Where(t => 
+                    {
+                        if (t.Status == "completed" || t.Status == "failed")
+                        {
+                            DateTime relevantTime = t.CompletedAt ?? t.CreatedAt;
+                            TimeSpan age = now - relevantTime;
+                            return age.TotalHours >= maxAgeHours;
+                        }
+                        return false;
+                    }).ToList();
+
+                    foreach (var task in tasksToRemove)
+                    {
+                        queue.Remove(task);
+                        removed++;
+                        LogManager.WriteLog("Cleanup: Removed old " + task.Status + " task: " + task.Name + " (ID: " + task.Id + ")");
+                    }
+
+                    if (removed > 0)
+                    {
+                        SaveQueue(queue);
+                        LogManager.WriteLog("Cleanup completed: Removed " + removed + " old tasks, " + queue.Count + " remaining");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    LogManager.WriteLog("Error in CleanupOldCompletedTasks: " + ex.Message);
+                }
+            }
+        }
+
         private static TaskQueueItem DictToQueueItem(Dictionary<string, object> dict)
         {
             var item = new TaskQueueItem
@@ -184,7 +226,9 @@ namespace MetaBackupService
                 FilesProcessed = dict.ContainsKey("files_processed") ? Convert.ToInt32(dict["files_processed"]) : 0,
                 TotalFiles = dict.ContainsKey("total_files") ? Convert.ToInt32(dict["total_files"]) : 0,
                 ErrorMessage = dict.ContainsKey("error_message") ? dict["error_message"].ToString() : "",
-                LogFilePath = dict.ContainsKey("log_file_path") ? dict["log_file_path"].ToString() : ""
+                LogFilePath = dict.ContainsKey("log_file_path") ? dict["log_file_path"].ToString() : "",
+                RetryCount = dict.ContainsKey("retry_count") ? Convert.ToInt32(dict["retry_count"]) : 0,
+                MaxRetries = dict.ContainsKey("max_retries") ? Convert.ToInt32(dict["max_retries"]) : 3
             };
 
             if (dict.ContainsKey("created_at") && DateTime.TryParse(dict["created_at"].ToString(), out DateTime created))
@@ -195,6 +239,9 @@ namespace MetaBackupService
 
             if (dict.ContainsKey("completed_at") && DateTime.TryParse(dict["completed_at"].ToString(), out DateTime completed))
                 item.CompletedAt = completed;
+
+            if (dict.ContainsKey("last_retry_at") && DateTime.TryParse(dict["last_retry_at"].ToString(), out DateTime lastRetry))
+                item.LastRetryAt = lastRetry;
 
             return item;
         }
@@ -219,7 +266,10 @@ namespace MetaBackupService
                 { "files_processed", item.FilesProcessed },
                 { "total_files", item.TotalFiles },
                 { "error_message", item.ErrorMessage ?? "" },
-                { "log_file_path", item.LogFilePath ?? "" }
+                { "log_file_path", item.LogFilePath ?? "" },
+                { "retry_count", item.RetryCount },
+                { "max_retries", item.MaxRetries },
+                { "last_retry_at", item.LastRetryAt?.ToString("yyyy-MM-dd HH:mm:ss") ?? "" }
             };
         }
     }

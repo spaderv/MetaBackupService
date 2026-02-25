@@ -79,6 +79,7 @@
     <Compile Include="TaskQueue.cs" />
     <Compile Include="TaskQueueItem.cs" />
     <Compile Include="TaskQueueManager.cs" />
+    <Compile Include="TaskResumeManager.cs" />
   </ItemGroup>
   <ItemGroup>
     <BootstrapperPackage Include="Microsoft.Net.Framework.3.5.SP1">
@@ -86,6 +87,40 @@
       <ProductName>.NET Framework 3.5 SP1</ProductName>
       <Install>false</Install>
     </BootstrapperPackage>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="BEFORE_AFTER_COMPARISON.md" />
+    <None Include="CODE_DIFF_RESUME_FIX.md" />
+    <None Include="COMPLETE_FIX_DOCUMENTATION.md" />
+    <None Include="CRASH_RECOVERY_COMPLETE.md" />
+    <None Include="CRASH_RECOVERY_FINAL.md" />
+    <None Include="CRASH_RECOVERY_FIX.md" />
+    <None Include="DEPLOYMENT_CHECKLIST.md" />
+    <None Include="DOCUMENTATION_INDEX.md" />
+    <None Include="FINAL_SUMMARY.md" />
+    <None Include="FIXES_IMPLEMENTED.md" />
+    <None Include="IMPLEMENTATION_CHECKLIST.md" />
+    <None Include="IMPLEMENTATION_SUMMARY.md" />
+    <None Include="INDEX.md" />
+    <None Include="MONITORING_GUIDE.md" />
+    <None Include="PERFORMANCE_OPTIMIZATION.md" />
+    <None Include="QUEUE_CLEANUP_AND_SPEED_OPTIMIZATION.md" />
+    <None Include="QUICK_FIX_SUMMARY.md" />
+    <None Include="README_RESUME_SYSTEM.md" />
+    <None Include="RESUME_ARCHITECTURE.md" />
+    <None Include="RESUME_COMPLETE_SOLUTION.md" />
+    <None Include="RESUME_DIAGNOSIS_AND_FIX.md" />
+    <None Include="RESUME_FIX_FINAL.md" />
+    <None Include="RESUME_FIX_SUMMARY.md" />
+    <None Include="RESUME_FIX_VISUAL.md" />
+    <None Include="RESUME_QUICK_REFERENCE.md" />
+    <None Include="RESUME_QUICK_START.md" />
+    <None Include="RESUME_SYSTEM.md" />
+    <None Include="RESUME_SYSTEM_FIX.md" />
+    <None Include="START_HERE.md" />
+    <None Include="VERIFICATION_COMPLETE.md" />
+    <None Include="VERIFICATION_REPORT.md" />
+    <None Include="VISUAL_SUMMARY.md" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
 </Project>
