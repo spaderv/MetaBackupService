@@ -29,6 +29,7 @@ namespace MetaBackupService
                 string backupFolderPath = null;
                 int backedUpCount = 0;
                 var backedUpFiles = new HashSet<string>();
+                int lastRecordedPercent = 0;
 
                 // Check if resuming from previous attempt
                 if (resumeState != null && taskId != null && resumeState.ContainsKey("backup_folder"))
@@ -81,10 +82,15 @@ namespace MetaBackupService
                         backedUpCount++;
                         progressCallback?.Invoke(backedUpCount, totalFiles);
 
-                        // Record progress periodically (every 20 files)
-                        if (taskId != null && backedUpCount % 20 == 0)
+                        // Record progress when percentage increases by 1%
+                        if (taskId != null && totalFiles > 0)
                         {
-                            TaskResumeManager.RecordProcessedFiles(taskId, new List<string>(backedUpFiles));
+                            int currentPercent = (backedUpCount * 100) / totalFiles;
+                            if (currentPercent > lastRecordedPercent)
+                            {
+                                TaskResumeManager.RecordProcessedFiles(taskId, new List<string>(backedUpFiles));
+                                lastRecordedPercent = currentPercent;
+                            }
                         }
                     }
                     catch (Exception ex)
@@ -206,6 +212,7 @@ namespace MetaBackupService
                 int totalFiles = filesToBackup.Count;
                 int processedCount = backedUpFiles.Count;
                 var copiedOk = new HashSet<string>(backedUpFiles);
+                int lastRecordedPercent = totalFiles > 0 ? (processedCount * 100) / totalFiles : 0;
 
                 foreach (var tuple in filesToBackup)
                 {
@@ -225,10 +232,15 @@ namespace MetaBackupService
                         processedCount++;
                         progressCallback?.Invoke(processedCount, totalFiles);
 
-                        // Record progress periodically (every 20 files)
-                        if (taskId != null && processedCount % 20 == 0)
+                        // Record progress when percentage increases by 1%
+                        if (taskId != null && totalFiles > 0)
                         {
-                            TaskResumeManager.RecordProcessedFiles(taskId, new List<string>(copiedOk));
+                            int currentPercent = (processedCount * 100) / totalFiles;
+                            if (currentPercent > lastRecordedPercent)
+                            {
+                                TaskResumeManager.RecordProcessedFiles(taskId, new List<string>(copiedOk));
+                                lastRecordedPercent = currentPercent;
+                            }
                         }
                     }
                 }

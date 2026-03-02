@@ -196,44 +196,59 @@ namespace MetaBackupService
 
         private void ExecuteQueuedBackup(TaskQueueItem queueItem)
         {
-            string unifiedProgressFile = Path.Combine(
+            string progressFile = Path.Combine(
                 LogManager.GetLogDirectory(),
                 "progress.txt");
             
             DateTime startTime = DateTime.Now;
-            int progressUpdateCounter = 0;
-            const int PROGRESS_UPDATE_FREQUENCY = 50;  // Update progress every 50 files instead of every file
             
             BackupEngine engine = new BackupEngine();
+            
+            // Use a class to hold mutable state for closure
+            var progressTracker = new ProgressTracker();
 
-            // Create unified progress callback - OPTIMIZED: Don't write to disk on every file
+            // Progress callback - Write to progress.txt when percentage changes by 1%
             BackupEngine.ProgressCallback progressCallback = (current, total) =>
             {
                 queueItem.FilesProcessed = current;
                 queueItem.TotalFiles = total;
                 
-                // Only write progress to file every N files to reduce disk I/O
-                progressUpdateCounter++;
-                if (progressUpdateCounter >= PROGRESS_UPDATE_FREQUENCY || current == total)
+                // Save to progress.txt when percentage increases by 1%
+                if (total > 0)
                 {
-                    if (total > 0)
+                    int currentPercent = (current * 100) / total;
+                    if (currentPercent > progressTracker.LastPercent)
                     {
-                        int progressPercent = (current * 100) / total;
-                        string progressLine = string.Format("[{0:yyyy-MM-dd HH:mm:ss}] {1}: {2}/{3} ({4}%)",
-                            DateTime.Now, queueItem.Name, current, total, progressPercent);
-                        
                         try
                         {
-                            System.IO.File.AppendAllText(unifiedProgressFile, progressLine + Environment.NewLine);
+                            string progressLine = string.Format("[{0:yyyy-MM-dd HH:mm:ss}] {1}: {2}/{3} ({4}%)",
+                                DateTime.Now, queueItem.Name, current, total, currentPercent);
+                            
+                            File.AppendAllText(progressFile, progressLine + Environment.NewLine);
                         }
-                        catch { }
+                        catch (Exception ex)
+                        {
+                            LogManager.WriteLog("ERROR writing progress: " + ex.Message);
+                        }
+                        
+                        progressTracker.LastPercent = currentPercent;
                     }
-                    progressUpdateCounter = 0;
                 }
             };
 
             // Load resume state if available
             var resumeState = TaskResumeManager.LoadResumeState(queueItem.Id);
+            
+            if (resumeState != null && resumeState.ContainsKey("processed_files"))
+            {
+                var processedFiles = resumeState["processed_files"] as List<object>;
+                int filesCount = processedFiles != null ? processedFiles.Count : 0;
+                LogManager.WriteLog("Resuming backup task " + queueItem.Name + " (ID: " + queueItem.Id + ") from " + filesCount + " previously processed files");
+            }
+            else
+            {
+                LogManager.WriteLog("Starting new backup task " + queueItem.Name + " (ID: " + queueItem.Id + ")");
+            }
 
             string result = null;
             try
@@ -339,23 +354,50 @@ namespace MetaBackupService
                     LogManager.WriteLog("  - Running tasks: " + runningCount + " (will be retried)");
                     LogManager.WriteLog("  - Failed tasks: " + failedCount);
 
+                    bool needsSave = false;
+
                     // Convert any "running" tasks back to "pending" so they can be retried
                     // This handles cases where service crashed mid-backup
                     foreach (var task in queue.Where(t => t.Status == "running"))
                     {
                         LogManager.WriteLog("Recovering crashed task: " + task.Name + " (ID: " + task.Id + ")");
+                        
+                        // Check if resume state exists for this task
+                        var resumeState = TaskResumeManager.LoadResumeState(task.Id);
+                        if (resumeState != null && resumeState.ContainsKey("processed_files"))
+                        {
+                            LogManager.WriteLog("Resume state found for task " + task.Id + " - will resume from saved checkpoint");
+                        }
+                        else
+                        {
+                            LogManager.WriteLog("No resume state found for task " + task.Id + " - will restart from beginning");
+                        }
+                        
                         task.Status = "pending";
                         task.StartedAt = null;
+                        needsSave = true;
                     }
 
-                    // Save the updated queue back to disk
-                    TaskQueue.SaveQueue(queue);
+                    // Save the updated queue back to disk if any changes were made
+                    if (needsSave)
+                    {
+                        TaskQueue.SaveQueue(queue);
+                        LogManager.WriteLog("Queue recovered and persisted with " + queue.Count + " tasks");
+                    }
                 }
             }
             catch (Exception ex)
             {
                 LogManager.WriteLog("Error in LoadPersistedQueue: " + ex.Message);
             }
+        }
+
+        /// <summary>
+        /// Helper class to track progress state across callback invocations
+        /// </summary>
+        private class ProgressTracker
+        {
+            public int LastPercent { get; set; } = 0;
         }
     }
 }

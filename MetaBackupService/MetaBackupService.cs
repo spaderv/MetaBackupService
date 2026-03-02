@@ -109,39 +109,58 @@ namespace MetaBackupService
                     try
                     {
                         string json = File.ReadAllText(requestFile);
-                        var request = SimpleJsonParser.Parse(json);
+                        var request = SimpleJsonParser.Parse(json) as Dictionary<string, object>;
 
-                        string taskId = null;
-                        string taskName = null;
-                        
-                        if (request.ContainsKey("task_id"))
-                            taskId = request["task_id"].ToString();
-                        if (request.ContainsKey("task_name"))
-                            taskName = request["task_name"].ToString();
+                        if (request == null)
+                            continue;
 
-                        ScheduledTask taskToRun = null;
-                        
-                        // Try to find by ID first
-                        if (!string.IsNullOrEmpty(taskId))
+                        string taskId = request.ContainsKey("task_id") ? request["task_id"].ToString() : null;
+                        string taskName = request.ContainsKey("task_name") ? request["task_name"].ToString() : "Unknown";
+
+                        if (string.IsNullOrEmpty(taskId))
                         {
-                            taskToRun = _scheduledTasks.FirstOrDefault(t => 
-                                t.TaskDict.ContainsKey("id") && t.TaskDict["id"].ToString() == taskId);
+                            LogManager.WriteLog("Task request missing task_id");
+                            try { File.Delete(requestFile); } catch { }
+                            continue;
                         }
-                        
-                        // Fallback: try to find by name
-                        if (taskToRun == null && !string.IsNullOrEmpty(taskName))
-                        {
-                            taskToRun = _scheduledTasks.FirstOrDefault(t => 
-                                t.TaskDict.ContainsKey("name") && t.TaskDict["name"].ToString() == taskName);
-                        }
+
+                        LogManager.WriteLog("Processing task request: " + taskName + " (ID: " + taskId + ")");
+
+                        // Try to find task in scheduled tasks first
+                        ScheduledTask taskToRun = _scheduledTasks.FirstOrDefault(t => 
+                            t.TaskDict.ContainsKey("id") && t.TaskDict["id"].ToString() == taskId);
 
                         if (taskToRun != null)
                         {
-                            string displayName = taskToRun.TaskDict.ContainsKey("name") ? 
-                                taskToRun.TaskDict["name"].ToString() : (taskId ?? "Unknown");
-                            LogManager.WriteLog("Task enqueued: " + displayName);
-                            
+                            // Found in scheduled tasks - use it
+                            LogManager.WriteLog("Task found in scheduled tasks, enqueueing: " + taskName);
                             _queueManager.EnqueueTask(taskToRun);
+                        }
+                        else
+                        {
+                            // Not in scheduled tasks - this is a manually triggered task
+                            // Create a TaskQueueItem directly and enqueue it
+                            LogManager.WriteLog("Task not in scheduled tasks (manual trigger), creating queue item: " + taskName);
+                            
+                            var queueItem = new TaskQueueItem
+                            {
+                                Id = taskId,
+                                Name = taskName,
+                                Type = request.ContainsKey("task_type") ? request["task_type"].ToString() : "backup",
+                                Status = "pending",
+                                Source = request.ContainsKey("source") ? request["source"].ToString() : "",
+                                Dest = request.ContainsKey("dest") ? request["dest"].ToString() : "",
+                                Username = request.ContainsKey("username") ? request["username"].ToString() : "",
+                                FullBackup = request.ContainsKey("full_backup") && (bool)request["full_backup"],
+                                KeepLast = request.ContainsKey("keep_last") ? Convert.ToInt32(request["keep_last"]) : 3,
+                                DeleteOlderThanDays = request.ContainsKey("delete_older_than_days") ? Convert.ToInt32(request["delete_older_than_days"]) : 30,
+                                CreatedAt = DateTime.Now,
+                                RetryCount = 0,
+                                MaxRetries = 3
+                            };
+
+                            TaskQueue.EnqueueTask(queueItem);
+                            LogManager.WriteLog("Manually triggered task enqueued: " + taskName);
                         }
 
                         // Delete request file after processing
