@@ -79,6 +79,23 @@ namespace MetaBackupService
 
                 WriteLog("MetaBackup Service started successfully. Tasks scheduled: " + _scheduledTasks.Count);
                 LogManager.WriteSeparator();
+
+                // Send startup notification to Telegram
+                try
+                {
+                    if (TelegramNotificationService.IsConfigured())
+                    {
+                        TelegramNotificationService.SendSuccess(
+                            "MetaBackup Service Started",
+                            "Service is running and ready",
+                            "?? Tasks scheduled: " + _scheduledTasks.Count + "\n?? Next run in: 1 minute"
+                        );
+                    }
+                }
+                catch (Exception ex)
+                {
+                    LogManager.WriteLog("Error sending Telegram notification: " + ex.Message);
+                }
             }
             catch (Exception ex)
             {

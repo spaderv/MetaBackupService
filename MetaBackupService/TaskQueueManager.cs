@@ -146,12 +146,25 @@ namespace MetaBackupService
                                 nextTask.PrepareForRetry();
                                 TaskQueue.UpdateTaskStatus(nextTask.Id, "pending");
                                 LogManager.WriteLog("Task will retry - Attempt " + (nextTask.RetryCount) + " of " + nextTask.MaxRetries + ": " + nextTask.Name);
+                                
+                                // Send Telegram warning for retry
+                                TelegramNotificationService.SendWarning(
+                                    "Task Retry: " + nextTask.Name,
+                                    "Task will be retried\nAttempt " + nextTask.RetryCount + " of " + nextTask.MaxRetries + "\nError: " + ex.Message
+                                );
                             }
                             else
                             {
                                 TaskResumeManager.DeleteResumeState(nextTask.Id);
                                 TaskQueue.RemoveTask(nextTask.Id);
                                 LogManager.WriteLog("Task failed (no more retries): " + nextTask.Name + " - Error: " + ex.Message);
+                                
+                                // Send Telegram failure notification
+                                TelegramNotificationService.SendFailure(
+                                    "Task Failed: " + nextTask.Name,
+                                    "Task failed after " + nextTask.MaxRetries + " attempts",
+                                    "Error: " + ex.Message
+                                );
                             }
                         }
                         
@@ -279,6 +292,13 @@ namespace MetaBackupService
                         DateTime.Now, queueItem.Name, duration);
                     System.IO.File.AppendAllText(yedekTasksLog, taskEntry + Environment.NewLine);
                     LogManager.WriteLog("Backup completed with no changes: " + queueItem.Name);
+                    
+                    // Send Telegram notification for no changes
+                    TelegramNotificationService.SendSuccess(
+                        "Backup Task: " + queueItem.Name,
+                        "No changes detected - Backup skipped",
+                        "Source: " + queueItem.Source + "\nDestination: " + queueItem.Dest + "\nDuration: " + duration.ToString("hh\\:mm\\:ss")
+                    );
                 }
                 else
                 {
@@ -286,6 +306,13 @@ namespace MetaBackupService
                         DateTime.Now, queueItem.Name, queueItem.FilesProcessed, result, duration);
                     System.IO.File.AppendAllText(yedekTasksLog, taskEntry + Environment.NewLine);
                     LogManager.WriteLog("Backup completed successfully: " + queueItem.Name + " - " + queueItem.FilesProcessed + " files");
+                    
+                    // Send Telegram success notification
+                    TelegramNotificationService.SendSuccess(
+                        "Backup Task: " + queueItem.Name,
+                        "Backup completed successfully",
+                        "Files processed: " + queueItem.FilesProcessed + "\nSource: " + queueItem.Source + "\nDestination: " + queueItem.Dest + "\nDuration: " + duration.ToString("hh\\:mm\\:ss")
+                    );
                 }
             }
             catch (Exception logEx)
@@ -296,6 +323,8 @@ namespace MetaBackupService
 
         private void ExecuteQueuedCleaning(TaskQueueItem queueItem)
         {
+            DateTime startTime = DateTime.Now;
+            
             try
             {
                 CleaningEngine.ProgressCallback progressCallback = (current, total) =>
@@ -307,11 +336,29 @@ namespace MetaBackupService
                 var result = CleaningEngine.RunCleaning(queueItem.Source, queueItem.DeleteOlderThanDays, 
                     queueItem.Username, progressCallback);
 
+                TimeSpan duration = DateTime.Now - startTime;
+                
                 LogManager.WriteLog("Cleaning completed: " + result.Item2);
+                
+                // Send Telegram success notification
+                TelegramNotificationService.SendSuccess(
+                    "Cleaning Task: " + queueItem.Name,
+                    result.Item2,
+                    "Source: " + queueItem.Source + "\nOlder than: " + queueItem.DeleteOlderThanDays + " days\nDuration: " + duration.ToString("hh\\:mm\\:ss")
+                );
             }
             catch (Exception ex)
             {
                 LogManager.WriteLog("Cleaning error: " + ex.Message);
+                
+                // Send Telegram failure notification
+                TimeSpan duration = DateTime.Now - startTime;
+                TelegramNotificationService.SendFailure(
+                    "Cleaning Task: " + queueItem.Name,
+                    "Cleaning task failed",
+                    "Source: " + queueItem.Source + "\nDuration: " + duration.ToString("hh\\:mm\\:ss") + "\nError: " + ex.Message
+                );
+                
                 throw;
             }
         }
